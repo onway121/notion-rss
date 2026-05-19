@@ -5,6 +5,9 @@ on:
     - cron: '12 5 * * *'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   get-feed:
     runs-on: ubuntu-latest
@@ -15,20 +18,27 @@ jobs:
       NOTION_FEEDS_DATABASE_ID: ${{ secrets.NOTION_FEEDS_DATABASE_ID }}
       FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
       RUN_FREQUENCY: 86400
+      CI: "true"
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate secrets
         run: |
-          pip install -r requirements.txt
+          test -n "$NOTION_API_TOKEN" || (echo "::error::缺少 NOTION_API_TOKEN" && exit 1)
+          test -n "$NOTION_READER_DATABASE_ID" || (echo "::error::缺少 NOTION_READER_DATABASE_ID" && exit 1)
+          test -n "$NOTION_FEEDS_DATABASE_ID" || (echo "::error::缺少 NOTION_FEEDS_DATABASE_ID" && exit 1)
+          test -n "$FEISHU_WEBHOOK_URL" || (echo "::error::缺少 FEISHU_WEBHOOK_URL" && exit 1)
 
       - name: Run feed
         run: python main.py

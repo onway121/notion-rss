@@ -7,6 +7,7 @@ import feedparser
 from dotenv import load_dotenv
 
 from notion import get_feed_urls_from_notion, get_existing_items_since
+from summary import make_summary
 
 load_dotenv()
 
@@ -16,24 +17,100 @@ _MAX_FETCH_WORKERS = 5
 
 
 def _parse_struct_time_to_timestamp(st) -> float:
-    """Convert struct_time to timestamp."""
     if st:
         return time.mktime(st)
     return 0.0
 
 
 def _extract_content(item) -> str:
-    """Safely extract content from a feed item."""
     content_list = item.get("content", [])
     if content_list:
         return content_list[0].get("value", "") or item.get("summary", "")
-    return item.get("summary", "")
+    return item.get("summary", "") or item.get("description", "")
+
+
+def _extract_summary_source(item) -> str:
+    """Prefer RSS summary/description before full HTML body."""
+    for key in ("summary", "description"):
+        val = item.get(key, "")
+        if val:
+            return val
+    return _extract_content(item)
 
 
 def _get_new_feed_items_from(
     feed_url: str,
     existing_titles: set[str],
     existing_links: set[str],
+) -> list[dict]:
+    try:
+        rss = feedparser.parse(feed_url)
+    except Exception as e:
+        logger.error("Error parsing feed %s: %s", feed_url, e)
+        return []
+
+    current_time_struct = rss.get("updated_parsed") or rss.get("published_parsed")
+    current_time = (
+        _parse_struct_time_to_timestamp(current_time_struct)
+        if current_time_struct
+        else time.time()
+    )
+
+    new_items: list[dict] = []
+    for item in rss.entries:
+        pub_date = item.get("published_parsed") or item.get("updated_parsed")
+        if not pub_date:
+            continue
+
+        blog_published_time = _parse_struct_time_to_timestamp(pub_date)
+        if (current_time - blog_published_time) >= RUN_FREQUENCY:
+            continue
+
+        title = item.get("title", "")
+        link = item.get("link", "")
+
+        if title in existing_titles or link in existing_links:
+            continue
+
+        raw_content = _extract_content(item)
+        summary_source = _extract_summary_source(item)
+
+        new_items.append({
+            "title": title,
+            "link": link,
+            "content": raw_content,
+            "summary": make_summary(summary_source),
+            "published_parsed": pub_date,
+        })
+
+    return new_items
+
+
+def get_new_feed_items() -> list[dict]:
+    feeds = get_feed_urls_from_notion()
+    existing_titles, existing_links = get_existing_items_since(days=5)
+
+    feed_urls = [f["feedUrl"] for f in feeds if f.get("feedUrl")]
+    all_new_feed_items: list[dict] = []
+
+    with ThreadPoolExecutor(max_workers=_MAX_FETCH_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                _get_new_feed_items_from, url, existing_titles, existing_links
+            ): url
+            for url in feed_urls
+        }
+        for future in as_completed(futures):
+            try:
+                all_new_feed_items.extend(future.result())
+            except Exception as e:
+                logger.error("Error fetching feed %s: %s", futures[future], e)
+
+    all_new_feed_items.sort(
+        key=lambda x: _parse_struct_time_to_timestamp(x.get("published_parsed"))
+    )
+
+    return all_new_feed_items
 ) -> list[dict]:
     """Fetch and filter new items from a single RSS feed."""
     try:

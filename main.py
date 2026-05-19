@@ -13,19 +13,17 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main entry point for the Notion Feeder application."""
     feed_items = get_new_feed_items()
     logger.info("Fetched %d new feed items", len(feed_items))
 
-    if feed_items:
-        send_feed_summary_to_feishu(feed_items)
+    send_feed_summary_to_feishu(feed_items)
 
     success, failed = 0, 0
     for item in feed_items:
         notion_item = {
             "title": item.get("title", ""),
             "link": item.get("link", ""),
-            "content": html_to_notion_blocks(item.get("content", ""))
+            "content": html_to_notion_blocks(item.get("content", "")),
         }
         if add_feed_item_to_notion(notion_item):
             success += 1
@@ -33,7 +31,6 @@ def main():
             failed += 1
 
     logger.info("Notion write complete: %d success, %d failed", success, failed)
-
     delete_old_unread_feed_items_from_notion()
 
 
